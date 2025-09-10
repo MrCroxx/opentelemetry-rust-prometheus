@@ -26,7 +26,7 @@
 //! let registry = prometheus::Registry::new();
 //!
 //! // configure OpenTelemetry to use this registry
-//! let exporter = opentelemetry_prometheus::exporter()
+//! let exporter = opentelemetry_prometheus_xx::exporter()
 //!     .with_registry(registry.clone())
 //!     .build()?;
 //!

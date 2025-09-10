@@ -74,7 +74,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use hyper_util::server::conn::auto::Builder;
 
     let registry = Registry::new();
-    let exporter = opentelemetry_prometheus::exporter()
+    let exporter = opentelemetry_prometheus_xx::exporter()
         .with_registry(registry.clone())
         .build()?;
     let provider = SdkMeterProvider::builder().with_reader(exporter).build();
