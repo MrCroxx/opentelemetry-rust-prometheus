@@ -2,9 +2,9 @@
 //!
 //! <div class="warning">
 //! <strong>Warning: This crate is no longer recommended for use.</strong><br><br>
-//! Development of the Prometheus exporter has been discontinued. See the related 
+//! Development of the Prometheus exporter has been discontinued. See the related
 //! [issue](https://github.com/open-telemetry/opentelemetry-rust/issues/2451).
-//! This crate depends on the unmaintained `protobuf` crate and has unresolved 
+//! This crate depends on the unmaintained `protobuf` crate and has unresolved
 //! security vulnerabilities. Version 0.29 will be the final release.
 //!
 //! For Prometheus integration, we strongly recommend using the [OTLP] exporter instead.
@@ -106,14 +106,14 @@
 )]
 #![cfg_attr(test, deny(warnings))]
 
-use once_cell::sync::{Lazy, OnceCell};
+use once_cell::sync::OnceCell;
 use opentelemetry::{otel_error, otel_warn, InstrumentationScope, Key, Value};
 use opentelemetry_sdk::{
     error::OTelSdkResult,
     metrics::{
         data::{self, ResourceMetrics},
         reader::MetricReader,
-        InstrumentKind, ManualReader, MetricResult, Pipeline, Temporality,
+        InstrumentKind, ManualReader, Pipeline, Temporality,
     },
     Resource,
 };
@@ -122,10 +122,10 @@ use prometheus::{
     proto::{LabelPair, MetricFamily, MetricType},
 };
 use std::{
-    any::TypeId,
     borrow::Cow,
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use std::{fmt, sync::Weak};
 
@@ -164,7 +164,7 @@ impl MetricReader for PrometheusExporter {
         self.reader.register_pipeline(pipeline)
     }
 
-    fn collect(&self, rm: &mut ResourceMetrics) -> MetricResult<()> {
+    fn collect(&self, rm: &mut ResourceMetrics) -> OTelSdkResult {
         self.reader.collect(rm)
     }
 
@@ -172,8 +172,8 @@ impl MetricReader for PrometheusExporter {
         self.reader.force_flush()
     }
 
-    fn shutdown(&self) -> OTelSdkResult {
-        self.reader.shutdown()
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+        self.reader.shutdown_with_timeout(timeout)
     }
 
     /// Note: Prometheus only supports cumulative temporality, so this will always be
@@ -202,71 +202,46 @@ struct CollectorInner {
     metric_families: HashMap<String, MetricFamily>,
 }
 
-// TODO: Remove lazy and switch to pattern matching once `TypeId` is stable in
-// const context: https://github.com/rust-lang/rust/issues/77125
-static HISTOGRAM_TYPES: Lazy<[TypeId; 3]> = Lazy::new(|| {
-    [
-        TypeId::of::<data::Histogram<i64>>(),
-        TypeId::of::<data::Histogram<u64>>(),
-        TypeId::of::<data::Histogram<f64>>(),
-    ]
-});
-static SUM_TYPES: Lazy<[TypeId; 3]> = Lazy::new(|| {
-    [
-        TypeId::of::<data::Sum<i64>>(),
-        TypeId::of::<data::Sum<u64>>(),
-        TypeId::of::<data::Sum<f64>>(),
-    ]
-});
-static GAUGE_TYPES: Lazy<[TypeId; 3]> = Lazy::new(|| {
-    [
-        TypeId::of::<data::Gauge<i64>>(),
-        TypeId::of::<data::Gauge<u64>>(),
-        TypeId::of::<data::Gauge<f64>>(),
-    ]
-});
-
 impl Collector {
     fn metric_type_and_name(&self, m: &data::Metric) -> Option<(MetricType, Cow<'static, str>)> {
         let mut name = self.get_name(m);
 
-        let data = m.data.as_any();
-        let type_id = data.type_id();
-
-        if HISTOGRAM_TYPES.contains(&type_id) {
-            Some((MetricType::HISTOGRAM, name))
-        } else if GAUGE_TYPES.contains(&type_id) {
-            Some((MetricType::GAUGE, name))
-        } else if SUM_TYPES.contains(&type_id) {
-            let is_monotonic = if let Some(v) = data.downcast_ref::<data::Sum<i64>>() {
-                v.is_monotonic
-            } else if let Some(v) = data.downcast_ref::<data::Sum<u64>>() {
-                v.is_monotonic
-            } else if let Some(v) = data.downcast_ref::<data::Sum<f64>>() {
-                v.is_monotonic
-            } else {
-                false
-            };
-
-            if is_monotonic {
-                if !self.without_counter_suffixes {
-                    name = format!("{name}{COUNTER_SUFFIX}").into();
+        macro_rules! extract_metric_data_type_and_name {
+            ($data:expr, $counter:tt) => {
+                match $data {
+                    data::MetricData::Gauge(_) => Some((MetricType::GAUGE, name)),
+                    data::MetricData::Sum(sum) => {
+                        let is_monotonic = sum.is_monotonic();
+                        if is_monotonic {
+                            if !self.without_counter_suffixes {
+                                name = format!("{name}{COUNTER_SUFFIX}").into();
+                            }
+                            Some((MetricType::COUNTER, name))
+                        } else {
+                            Some((MetricType::GAUGE, name))
+                        }
+                    }
+                    data::MetricData::Histogram(_) => Some((MetricType::HISTOGRAM, name)),
+                    data::MetricData::ExponentialHistogram(_) => {
+                        Some((MetricType::HISTOGRAM, name))
+                    }
                 }
-                Some((MetricType::COUNTER, name))
-            } else {
-                Some((MetricType::GAUGE, name))
-            }
-        } else {
-            None
+            };
+        }
+
+        match m.data() {
+            data::AggregatedMetrics::F64(data) => extract_metric_data_type_and_name!(data, self),
+            data::AggregatedMetrics::U64(data) => extract_metric_data_type_and_name!(data, self),
+            data::AggregatedMetrics::I64(data) => extract_metric_data_type_and_name!(data, self),
         }
     }
 
     fn get_name(&self, m: &data::Metric) -> Cow<'static, str> {
-        let name = utils::sanitize_name(&m.name);
+        let name = utils::sanitize_name(&m.name().to_string().into());
         let unit_suffixes = if self.without_units {
             None
         } else {
-            utils::get_unit_suffixes(&m.unit)
+            utils::get_unit_suffixes(m.unit())
         };
         match (&self.namespace, unit_suffixes) {
             (Some(namespace), Some(suffix)) => Cow::Owned(format!("{namespace}{name}_{suffix}")),
@@ -294,10 +269,7 @@ impl prometheus::core::Collector for Collector {
             }
         };
 
-        let mut metrics = ResourceMetrics {
-            resource: Resource::builder_empty().build(),
-            scope_metrics: vec![],
-        };
+        let mut metrics = ResourceMetrics::default();
         if let Err(err) = self.reader.collect(&mut metrics) {
             otel_error!(
                 name: "MetricScrapeFailed",
@@ -305,38 +277,42 @@ impl prometheus::core::Collector for Collector {
             );
             return vec![];
         }
-        let mut res = Vec::with_capacity(metrics.scope_metrics.len() + 1);
+        let mut res = Vec::with_capacity(metrics.scope_metrics().collect::<Vec<_>>().len() + 1);
 
         let target_info = self.create_target_info_once.get_or_init(|| {
             // Resource should be immutable, we don't need to compute again
-            create_info_metric(TARGET_INFO_NAME, TARGET_INFO_DESCRIPTION, &metrics.resource)
+            create_info_metric(
+                TARGET_INFO_NAME,
+                TARGET_INFO_DESCRIPTION,
+                metrics.resource(),
+            )
         });
 
-        if !self.disable_target_info && !metrics.resource.is_empty() {
+        if !self.disable_target_info && !metrics.resource().is_empty() {
             res.push(target_info.clone())
         }
 
         let resource_labels = self
             .resource_labels_once
-            .get_or_init(|| self.resource_selector.select(&metrics.resource));
+            .get_or_init(|| self.resource_selector.select(metrics.resource()));
 
-        for scope_metrics in metrics.scope_metrics {
+        for scope_metrics in metrics.scope_metrics() {
             let scope_labels = if !self.disable_scope_info {
-                if scope_metrics.scope.attributes().count() > 0 {
+                if scope_metrics.scope().attributes().count() > 0 {
                     let scope_info = inner
                         .scope_infos
-                        .entry(scope_metrics.scope.clone())
+                        .entry(scope_metrics.scope().clone())
                         .or_insert_with_key(create_scope_info_metric);
                     res.push(scope_info.clone());
                 }
 
                 let mut labels =
-                    Vec::with_capacity(1 + scope_metrics.scope.version().is_some() as usize);
+                    Vec::with_capacity(1 + scope_metrics.scope().version().is_some() as usize);
                 let mut name = LabelPair::new();
                 name.set_name(SCOPE_INFO_KEYS[0].into());
-                name.set_value(scope_metrics.scope.name().to_string());
+                name.set_value(scope_metrics.scope().name().to_string());
                 labels.push(name);
-                if let Some(version) = &scope_metrics.scope.version() {
+                if let Some(version) = &scope_metrics.scope().version() {
                     let mut l_version = LabelPair::new();
                     l_version.set_name(SCOPE_INFO_KEYS[1].into());
                     l_version.set_value(version.to_string());
@@ -351,39 +327,56 @@ impl prometheus::core::Collector for Collector {
                 Vec::new()
             };
 
-            for metrics in scope_metrics.metrics {
-                let (metric_type, name) = match self.metric_type_and_name(&metrics) {
+            for metrics in scope_metrics.metrics() {
+                let (metric_type, name) = match self.metric_type_and_name(metrics) {
                     Some((metric_type, name)) => (metric_type, name),
                     _ => continue,
                 };
 
                 let mfs = &mut inner.metric_families;
-                let (drop, help) = validate_metrics(&name, &metrics.description, metric_type, mfs);
+                let (drop, help) = validate_metrics(&name, metrics.description(), metric_type, mfs);
                 if drop {
                     continue;
                 }
 
-                let description = help.unwrap_or_else(|| metrics.description.into());
-                let data = metrics.data.as_any();
+                let description = help.unwrap_or_else(|| metrics.description().into());
 
-                if let Some(hist) = data.downcast_ref::<data::Histogram<i64>>() {
-                    add_histogram_metric(&mut res, hist, description, &scope_labels, name);
-                } else if let Some(hist) = data.downcast_ref::<data::Histogram<u64>>() {
-                    add_histogram_metric(&mut res, hist, description, &scope_labels, name);
-                } else if let Some(hist) = data.downcast_ref::<data::Histogram<f64>>() {
-                    add_histogram_metric(&mut res, hist, description, &scope_labels, name);
-                } else if let Some(sum) = data.downcast_ref::<data::Sum<u64>>() {
-                    add_sum_metric(&mut res, sum, description, &scope_labels, name);
-                } else if let Some(sum) = data.downcast_ref::<data::Sum<i64>>() {
-                    add_sum_metric(&mut res, sum, description, &scope_labels, name);
-                } else if let Some(sum) = data.downcast_ref::<data::Sum<f64>>() {
-                    add_sum_metric(&mut res, sum, description, &scope_labels, name);
-                } else if let Some(g) = data.downcast_ref::<data::Gauge<u64>>() {
-                    add_gauge_metric(&mut res, g, description, &scope_labels, name);
-                } else if let Some(g) = data.downcast_ref::<data::Gauge<i64>>() {
-                    add_gauge_metric(&mut res, g, description, &scope_labels, name);
-                } else if let Some(g) = data.downcast_ref::<data::Gauge<f64>>() {
-                    add_gauge_metric(&mut res, g, description, &scope_labels, name);
+                macro_rules! add_metric {
+                    ($data:expr) => {
+                        match $data {
+                            data::MetricData::Gauge(gauge) => {
+                                add_gauge_metric(&mut res, gauge, description, &scope_labels, name);
+                            }
+                            data::MetricData::Sum(sum) => {
+                                add_sum_metric(&mut res, sum, description, &scope_labels, name);
+                            }
+                            data::MetricData::Histogram(hist) => {
+                                add_histogram_metric(
+                                    &mut res,
+                                    hist,
+                                    description,
+                                    &scope_labels,
+                                    name,
+                                );
+                            }
+                            data::MetricData::ExponentialHistogram(_) => {
+                                // FIXME(MrCroxx):
+                                // add_exponential_histogram_metric(
+                                //     &mut res,
+                                //     hist,
+                                //     description,
+                                //     &scope_labels,
+                                //     name,
+                                // );
+                            }
+                        }
+                    };
+                }
+
+                match metrics.data() {
+                    data::AggregatedMetrics::F64(data) => add_metric!(data),
+                    data::AggregatedMetrics::U64(data) => add_metric!(data),
+                    data::AggregatedMetrics::I64(data) => add_metric!(data),
                 }
             }
         }
@@ -469,19 +462,17 @@ fn add_histogram_metric<T: Numeric>(
     // Consider supporting exemplars when `prometheus` crate has the feature
     // See: https://github.com/tikv/rust-prometheus/issues/393
 
-    for dp in &histogram.data_points {
-        let kvs = get_attrs(
-            &mut dp.attributes.iter().map(|kv| (&kv.key, &kv.value)),
-            extra,
-        );
-        let bounds_len = dp.bounds.len();
-        let (bucket, _) = dp.bounds.iter().enumerate().fold(
+    for dp in histogram.data_points() {
+        let kvs = get_attrs(&mut dp.attributes().map(|kv| (&kv.key, &kv.value)), extra);
+        let bounds_len = dp.bounds().collect::<Vec<_>>().len();
+        let bucket_counts = dp.bucket_counts().collect::<Vec<_>>();
+        let (bucket, _) = dp.bounds().enumerate().fold(
             (Vec::with_capacity(bounds_len), 0),
             |(mut acc, mut count), (i, bound)| {
-                count += dp.bucket_counts[i];
+                count += bucket_counts[i];
 
                 let mut b = prometheus::proto::Bucket::default();
-                b.set_upper_bound(*bound);
+                b.set_upper_bound(bound);
                 b.set_cumulative_count(count);
                 acc.push(b);
                 (acc, count)
@@ -489,8 +480,8 @@ fn add_histogram_metric<T: Numeric>(
         );
 
         let mut h = prometheus::proto::Histogram::default();
-        h.set_sample_sum(dp.sum.as_f64());
-        h.set_sample_count(dp.count);
+        h.set_sample_sum(dp.sum().as_f64());
+        h.set_sample_count(dp.count());
         h.set_bucket(bucket);
         let mut pm = prometheus::proto::Metric::default();
         pm.set_label(kvs);
@@ -505,6 +496,51 @@ fn add_histogram_metric<T: Numeric>(
     }
 }
 
+// FIXME(MrCroxx):
+// fn add_exponential_histogram_metric<T: Numeric>(
+//     res: &mut Vec<MetricFamily>,
+//     histogram: &data::ExponentialHistogram<T>,
+//     description: String,
+//     extra: &[LabelPair],
+//     name: Cow<'static, str>,
+// ) {
+//     // Consider supporting exemplars when `prometheus` crate has the feature
+//     // See: https://github.com/tikv/rust-prometheus/issues/393
+
+//     for dp in histogram.data_points() {
+//         let kvs = get_attrs(&mut dp.attributes().map(|kv| (&kv.key, &kv.value)), extra);
+
+//         let bounds_len = dp.bounds.len();
+//         let (bucket, _) = dp.bounds.iter().enumerate().fold(
+//             (Vec::with_capacity(bounds_len), 0),
+//             |(mut acc, mut count), (i, bound)| {
+//                 count += dp.bucket_counts[i];
+
+//                 let mut b = prometheus::proto::Bucket::default();
+//                 b.set_upper_bound(*bound);
+//                 b.set_cumulative_count(count);
+//                 acc.push(b);
+//                 (acc, count)
+//             },
+//         );
+
+//         let mut h = prometheus::proto::Histogram::default();
+//         h.set_sample_sum(dp.sum().as_f64());
+//         h.set_sample_count(dp.count() as _);
+//         h.set_bucket(bucket);
+//         let mut pm = prometheus::proto::Metric::default();
+//         pm.set_label(kvs);
+//         pm.set_histogram(h);
+
+//         let mut mf = prometheus::proto::MetricFamily::default();
+//         mf.set_name(name.to_string());
+//         mf.set_help(description.clone());
+//         mf.set_field_type(prometheus::proto::MetricType::HISTOGRAM);
+//         mf.set_metric(vec![pm]);
+//         res.push(mf);
+//     }
+// }
+
 fn add_sum_metric<T: Numeric>(
     res: &mut Vec<MetricFamily>,
     sum: &data::Sum<T>,
@@ -512,28 +548,25 @@ fn add_sum_metric<T: Numeric>(
     extra: &[LabelPair],
     name: Cow<'static, str>,
 ) {
-    let metric_type = if sum.is_monotonic {
+    let metric_type = if sum.is_monotonic() {
         MetricType::COUNTER
     } else {
         MetricType::GAUGE
     };
 
-    for dp in &sum.data_points {
-        let kvs = get_attrs(
-            &mut dp.attributes.iter().map(|kv| (&kv.key, &kv.value)),
-            extra,
-        );
+    for dp in sum.data_points() {
+        let kvs = get_attrs(&mut dp.attributes().map(|kv| (&kv.key, &kv.value)), extra);
 
         let mut pm = prometheus::proto::Metric::default();
         pm.set_label(kvs);
 
-        if sum.is_monotonic {
+        if sum.is_monotonic() {
             let mut c = prometheus::proto::Counter::default();
-            c.set_value(dp.value.as_f64());
+            c.set_value(dp.value().as_f64());
             pm.set_counter(c);
         } else {
             let mut g = prometheus::proto::Gauge::default();
-            g.set_value(dp.value.as_f64());
+            g.set_value(dp.value().as_f64());
             pm.set_gauge(g);
         }
 
@@ -553,14 +586,11 @@ fn add_gauge_metric<T: Numeric>(
     extra: &[LabelPair],
     name: Cow<'static, str>,
 ) {
-    for dp in &gauge.data_points {
-        let kvs = get_attrs(
-            &mut dp.attributes.iter().map(|kv| (&kv.key, &kv.value)),
-            extra,
-        );
+    for dp in gauge.data_points() {
+        let kvs = get_attrs(&mut dp.attributes().map(|kv| (&kv.key, &kv.value)), extra);
 
         let mut g = prometheus::proto::Gauge::default();
-        g.set_value(dp.value.as_f64());
+        g.set_value(dp.value().as_f64());
         let mut pm = prometheus::proto::Metric::default();
         pm.set_label(kvs);
         pm.set_gauge(g);
@@ -583,10 +613,7 @@ fn create_info_metric(
     g.set_value(1.0);
 
     let mut m = prometheus::proto::Metric::default();
-    m.set_label(get_attrs(
-        &mut resource.iter(),
-        &[],
-    ));
+    m.set_label(get_attrs(&mut resource.iter(), &[]));
     m.set_gauge(g);
 
     let mut mf = MetricFamily::default();
@@ -625,7 +652,7 @@ fn create_scope_info_metric(scope: &InstrumentationScope) -> MetricFamily {
     mf
 }
 
-trait Numeric: fmt::Debug {
+trait Numeric: fmt::Debug + Copy {
     // lossy at large values for u64 and i64 but prometheus only handles floats
     fn as_f64(&self) -> f64;
 }
