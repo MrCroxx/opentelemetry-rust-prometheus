@@ -6,9 +6,9 @@ homepage = "https://github.com/open-telemetry/opentelemetry-rust/tree/main/opent
 repository = "https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-prometheus"
 readme = "README.md"
 categories = [
-    "development-tools::debugging",
-    "development-tools::profiling",
-    "asynchronous",
+  "development-tools::debugging",
+  "development-tools::profiling",
+  "asynchronous",
 ]
 keywords = ["opentelemetry", "prometheus", "metrics", "async"]
 license = "Apache-2.0"
@@ -22,11 +22,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 once_cell = { version = "1.13" }
 opentelemetry = { version = "0.30", default-features = false, features = [
-    "metrics",
+  "metrics",
 ] }
 opentelemetry_sdk = { version = "0.30", default-features = false, features = [
-    "metrics",
-    "experimental_metrics_custom_reader",
+  "metrics",
+  "experimental_metrics_custom_reader",
 ] }
 prometheus = "0.14"
 tracing = { version = ">=0.1.40", default-features = false, optional = true } # optional for opentelemetry internal logging
@@ -45,5 +45,5 @@ internal-logs = ["tracing"]
 
 [package.metadata.cargo-machete]
 ignored = [
-    "tracing", # needed for `internal-logs`
+  "tracing", # needed for `internal-logs`
 ]
