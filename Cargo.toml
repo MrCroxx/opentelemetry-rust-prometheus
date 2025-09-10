@@ -1,6 +1,6 @@
 [package]
-name = "opentelemetry-prometheus"
-version = "0.29.1"
+name = "opentelemetry-prometheus-xx"
+version = "0.30.0"
 description = "Prometheus exporter for OpenTelemetry (This crate is discontinued and is no longer maintained)"
 homepage = "https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-prometheus"
 repository = "https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-prometheus"
