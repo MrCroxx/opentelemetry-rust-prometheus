@@ -1,5 +1,8 @@
 # OpenTelemetry Prometheus Exporter
 
+> [!NOTE]
+> This repo is forked from [open-telemetry/opentelemetry-rust](https://github.com/open-telemetry/opentelemetry-rust).
+
 ![OpenTelemetry — An observability framework for cloud-native software.][splash]
 
 [splash]: https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/main/assets/logo-text.png
