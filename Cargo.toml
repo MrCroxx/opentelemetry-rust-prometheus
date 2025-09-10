@@ -2,8 +2,8 @@
 name = "opentelemetry-prometheus-xx"
 version = "0.30.0"
 description = "Prometheus exporter for OpenTelemetry (This crate is discontinued and is no longer maintained)"
-homepage = "https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-prometheus"
-repository = "https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-prometheus"
+homepage = "https://github.com/mrcroxx/opentelemetry-rust-prometheus"
+repository = "https://github.com/mrcroxx/opentelemetry-rust-prometheus"
 readme = "README.md"
 categories = [
   "development-tools::debugging",
@@ -13,7 +13,7 @@ categories = [
 keywords = ["opentelemetry", "prometheus", "metrics", "async"]
 license = "Apache-2.0"
 edition = "2021"
-rust-version = "1.75.0"
+rust-version = "1.81.0"
 
 [package.metadata.docs.rs]
 all-features = true
